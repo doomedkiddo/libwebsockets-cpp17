@@ -1,0 +1,11 @@
+{
+    "version": "0.5",
+    "requires": [
+        "zlib/1.3.1#b8bc2603263cf7eccbd6e17e66b0ed76%1733936244.862",
+        "openssl/3.3.2#db38a6d356d27869fd90496897aedaf2%1736255835.422",
+        "libwebsockets/4.3.3#578a26fe57326fdb93cfd185facbb641%1715585785.418"
+    ],
+    "build_requires": [],
+    "python_requires": [],
+    "config_requires": []
+}

@@ -1,0 +1,6 @@
+[requires]
+libwebsockets/4.3.3
+
+[generators]
+CMakeDeps
+CMakeToolchain
