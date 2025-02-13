@@ -1,4 +1,3 @@
-// ws_client_test.cpp
 #include <ws_client.h>
 #include <iostream>
 #include <chrono>
@@ -6,11 +5,26 @@
 
 using namespace cexpp::util::wss;
 
-// 自定义处理器，实现IClientHandler接口
-class TestHandler : public IClientHandler {
+class BitgetHandler : public IClientHandler {
 public:
     void onMessage(const nlohmann::json& json) override {
-        std::cout << "Received JSON message: " << json.dump() << std::endl;
+        try {
+            std::cout << "Received JSON message: " << json.dump(2) << std::endl;
+            
+            // Handle pong response
+            if (json.contains("event") && json["event"] == "pong") {
+                lastPongTime = std::chrono::steady_clock::now();
+                return;
+            }
+
+            // Handle error messages
+            if (json.contains("code") && json["code"] != 0) {
+                std::cout << "Error: " << json["msg"].get<std::string>() << std::endl;
+                return;
+            }
+        } catch (const std::exception& e) {
+            std::cout << "Error processing message: " << e.what() << std::endl;
+        }
     }
 
     void onMessage(const std::string& msg) override {
@@ -19,47 +33,122 @@ public:
 
     void onUpdate() override {
         std::cout << "Connection status updated" << std::endl;
+        // Start ping timer after connection is established
+        if (wsClient) {
+            startPingTimer();
+        }
     }
 
     std::string genSubscribePayload(const std::string& name, bool isUnsubscribe) override {
-        // 生成订阅/取消订阅的payload示例
-        if (isUnsubscribe) {
-            return R"({"unsub":")" + name + R"("})";
+        // Parse the subscription details from the name
+        // Expecting format: "instType.channel.instId"
+        auto parts = splitString(name, '.');
+        if (parts.size() != 3) {
+            throw std::runtime_error("Invalid subscription name format");
         }
-        return R"({"sub":")" + name + R"("})";
+
+        nlohmann::json payload;
+        payload["op"] = isUnsubscribe ? "unsubscribe" : "subscribe";
+        payload["args"] = nlohmann::json::array();
+        
+        nlohmann::json arg;
+        arg["instType"] = parts[0];
+        arg["channel"] = parts[1];
+        arg["instId"] = parts[2];
+        payload["args"].push_back(arg);
+
+        return payload.dump();
     }
+
+    void setWsClient(WsClient* client) {
+        wsClient = client;
+        if (wsClient) {
+            startPingTimer();
+        }
+    }
+
+    ~BitgetHandler() {
+        stopPingTimer();
+    }
+
+private:
+    void startPingTimer() {
+        stopPingTimer();  // Stop existing timer if any
+        
+        pingRunning = true;
+        pingThread = std::thread([this]() {
+            while (pingRunning) {
+                if (wsClient) {
+                    // Bitget's ping format
+                    nlohmann::json pingMsg;
+                    pingMsg["event"] = "ping";
+                    wsClient->send(pingMsg.dump());
+                }
+                std::this_thread::sleep_for(std::chrono::seconds(20));  // Send ping every 20 seconds
+            }
+        });
+    }
+
+    void stopPingTimer() {
+        pingRunning = false;
+        if (pingThread.joinable()) {
+            pingThread.join();
+        }
+    }
+
+    std::vector<std::string> splitString(const std::string& str, char delimiter) {
+        std::vector<std::string> tokens;
+        std::string token;
+        std::istringstream tokenStream(str);
+        while (std::getline(tokenStream, token, delimiter)) {
+            tokens.push_back(token);
+        }
+        return tokens;
+    }
+
+    WsClient* wsClient = nullptr;
+    std::thread pingThread;
+    std::atomic<bool> pingRunning{false};
+    std::chrono::steady_clock::time_point lastPongTime;
 };
 
 int main() {
-    TestHandler handler;
-    WsClient client(
-        &handler,
-        "echo.websocket.org",  // WebSocket测试服务器地址
-        "/",                   // 路径
-        443,                   // 端口
-        true                   // 使用SSL
+    // Enable WebSocket logging
+
+    auto handler = std::make_shared<BitgetHandler>();
+    
+    // Create WebSocket client for Bitget
+    auto client = std::make_shared<WsClient>(
+        handler.get(),
+        "ws.bitget.com",    // Bitget WebSocket domain
+        "/v2/ws/public",    // WebSocket path
+        443,               // Port
+        true              // Use SSL
     );
 
-    // 测试基本消息发送
-    client.send(R"({"test":"Hello WebSocket"})");
-    std::this_thread::sleep_for(std::chrono::seconds(1));
+    // Set the client reference in handler for ping-pong
+    handler->setWsClient(client.get());
 
-    // 测试动态订阅
-    client.subscribeDynamic("market.btcusdt.ticker", "success_key", true);
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    // Subscribe to BTC-USDT futures ticker
+    std::string channelName = "USDT-FUTURES.ticker.BTCUSDT";
+    client->subscribeDynamic(channelName, "code", true);
 
-    // 测试取消订阅
-    client.unSubscribeDynamic("market.btcusdt.ticker", "success_key", true);
-    std::this_thread::sleep_for(std::chrono::seconds(2));
+    // Keep the program running and handle user input
+    std::string command;
+    while (true) {
+        std::cout << "\nEnter command (subscribe/unsubscribe/quit): ";
+        std::getline(std::cin, command);
 
-    // 测试重连
-    std::cout << "Testing reconnect..." << std::endl;
-    client.reconnect("manual test");
-    std::this_thread::sleep_for(std::chrono::seconds(2));
-
-    // 保持运行以观察输出
-    std::cout << "Press Enter to exit..." << std::endl;
-    std::cin.get();
+        if (command == "quit") {
+            break;
+        }
+        else if (command == "subscribe") {
+            client->subscribeDynamic(channelName, "code", true);
+        }
+        else if (command == "unsubscribe") {
+            client->unSubscribeDynamic(channelName, "code", true);
+        }
+    }
 
     return 0;
 }
