@@ -2,14 +2,17 @@
 #include <iostream>
 #include <chrono>
 #include <thread>
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 using namespace cexpp::util::wss;
+
 
 class BitgetHandler : public IClientHandler {
 public:
     void onMessage(const nlohmann::json& json) override {
         try {
-            std::cout << "Received JSON message: " << json.dump(2) << std::endl;
+            spdlog::info("Received JSON message: {}", json.dump(2));
             
             // Handle pong response
             if (json.contains("event") && json["event"] == "pong") {
@@ -19,20 +22,20 @@ public:
 
             // Handle error messages
             if (json.contains("code") && json["code"] != 0) {
-                std::cout << "Error: " << json["msg"].get<std::string>() << std::endl;
+                spdlog::error("Error: {}", json["msg"].get<std::string>());
                 return;
             }
         } catch (const std::exception& e) {
-            std::cout << "Error processing message: " << e.what() << std::endl;
+            spdlog::error("Error processing message: {}", e.what());
         }
     }
 
     void onMessage(const std::string& msg) override {
-        std::cout << "Received raw message: " << msg << std::endl;
+        spdlog::info("Received raw message: {}", msg);
     }
 
     void onUpdate() override {
-        std::cout << "Connection status updated" << std::endl;
+        spdlog::info("Connection status updated");
         // Start ping timer after connection is established
         if (wsClient) {
             startPingTimer();

@@ -2,8 +2,10 @@
     "version": "0.5",
     "requires": [
         "zlib/1.3.1#b8bc2603263cf7eccbd6e17e66b0ed76%1733936244.862",
+        "spdlog/1.15.0#da21f74dd84627fa68601c4e3b9c3f00%1731353167.297",
         "openssl/3.3.2#db38a6d356d27869fd90496897aedaf2%1736255835.422",
-        "libwebsockets/4.3.3#578a26fe57326fdb93cfd185facbb641%1715585785.418"
+        "libwebsockets/4.3.3#578a26fe57326fdb93cfd185facbb641%1715585785.418",
+        "fmt/11.0.2#b4a24d70b93466b9b508ddb7b014643b%1735899162.196"
     ],
     "build_requires": [],
     "python_requires": [],

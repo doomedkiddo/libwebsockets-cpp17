@@ -1,5 +1,6 @@
 [requires]
 libwebsockets/4.3.3
+spdlog/1.15.0
 
 [generators]
 CMakeDeps

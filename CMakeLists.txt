@@ -19,6 +19,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Find dependencies (Conan packages)
 find_package(Libwebsockets REQUIRED)
 find_package(nlohmann_json REQUIRED)
+find_package(spdlog REQUIRED)
 
 add_definitions(
     -UNDEBUG
@@ -51,4 +52,5 @@ target_link_libraries(
     PUBLIC
         websockets
         nlohmann_json::nlohmann_json
+        spdlog::spdlog
 )

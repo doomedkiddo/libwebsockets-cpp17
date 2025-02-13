@@ -1,9 +1,12 @@
 // ws_client.cpp
 #include <ws_client.h>
 #include <iostream>
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
 
 namespace cexpp::util::wss {
 
+static std::shared_ptr<spdlog::logger> logger = spdlog::stdout_color_mt("websocket");
 // Define the global variable for logging
 bool wsLogEnabled = false;
 
@@ -36,6 +39,8 @@ WsClient::WsClient(IClientHandler* handler,
     , path_(path)
     , port_(port)
     , useSSL_(useSSL) {
+
+    logger->set_level(spdlog::level::info);
     
     // Initialize the first protocol (ws protocol)
     protocols_[0].name = "ws-protocol";
@@ -122,7 +127,7 @@ void WsClient::disconnect() {
 
 void WsClient::reconnect(const std::string reason) {
     if (wsLogEnabled) {
-        std::cout << "Reconnecting due to: " << reason << std::endl;
+        logger->info("Reconnecting due to: {}" , reason);
     }
     
     disconnect();
@@ -236,7 +241,7 @@ void WsClient::processSubscribeQueue() {
                 req.retryCount++;
             } else {
                 if (wsLogEnabled) {
-                    std::cout << "Subscribe request failed after max retries: " << req.name << std::endl;
+                    logger->error("Subscribe request failed after max retries: {}", req.name);
                 }
                 subscribeQueue_.pop();
             }
@@ -290,7 +295,7 @@ int wsCallback(struct lws* wsi,
     switch (reason) {
         case LWS_CALLBACK_CLIENT_ESTABLISHED: {
             if (wsLogEnabled) {
-                std::cout << "Connection established" << std::endl;
+                logger->info("Connection established");
             }
             client->handler->onUpdate();
             break;
@@ -327,7 +332,7 @@ int wsCallback(struct lws* wsi,
         case LWS_CALLBACK_CLIENT_CLOSED:
         case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
             if (wsLogEnabled) {
-                std::cout << "Connection closed or error" << std::endl;
+                logger->warn("Connection closed or error");
             }
             client->reconnect("Connection closed or error");
             break;
