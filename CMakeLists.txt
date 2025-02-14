@@ -53,4 +53,6 @@ target_link_libraries(
         websockets
         nlohmann_json::nlohmann_json
         spdlog::spdlog
+         
 )
+

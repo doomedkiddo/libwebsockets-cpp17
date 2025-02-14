@@ -135,6 +135,10 @@ int main() {
     // Subscribe to BTC-USDT futures ticker
     std::string channelName = "USDT-FUTURES.ticker.BTCUSDT";
     client->subscribeDynamic(channelName, "code", true);
+    channelName = "USDT-FUTURES.ticker.XRPUSDT";
+    client->subscribeDynamic(channelName, "code", true);
+    channelName = "USDT-FUTURES.ticker.ETHUSDT";
+    client->subscribeDynamic(channelName, "code", true);
 
     // Keep the program running and handle user input
     std::string command;
