@@ -153,7 +153,14 @@ void WsClient::reconnect(std::string_view reason) {
 
 void WsClient::send(std::string_view payload) const {
     std::lock_guard<std::mutex> lock(sendMutex_);
-    sendQueue_.push(std::string(payload));  // Still need to copy here for queue storage
+    // Pre-allocate buffer with LWS_PRE padding
+    static thread_local std::vector<unsigned char> buffer(LWS_PRE + 4096);
+    if (buffer.size() < LWS_PRE + payload.length()) {
+        buffer.resize(LWS_PRE + payload.length());
+    }
+    memcpy(buffer.data() + LWS_PRE, payload.data(), payload.length());
+    
+    sendQueue_.push(std::string(payload)); // Still need to queue for async sending
     sendCv_.notify_one();
     
     if (connection_) {
@@ -218,10 +225,14 @@ bool WsClient::isUnsubscribeOk(std::string_view name) {
 }
 
 void WsClient::processMessage(const std::string& msg) {
+    // Fast path: first try to handle subscribe response without JSON parsing
+    if (!subscribeQueue_.empty()) {
+        handleSubscribeResponse(msg);
+    }
+    
     try {
         auto json = nlohmann::json::parse(msg);
         handler->onMessage(json);
-        handleSubscribeResponse(msg);
     } catch (const std::exception& e) {
         handler->onMessage(msg);
     }
