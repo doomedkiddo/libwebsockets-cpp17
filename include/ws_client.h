@@ -34,35 +34,35 @@ struct SubscribeRequest {
 class WsClient : public ClientBase, public std::enable_shared_from_this<WsClient> {
 public:
     WsClient(IClientHandler* handler, 
-             const std::string& url,
-             const std::string& path,
+             std::string_view url,
+             std::string_view path,
              uint16_t port = 443,
              bool useSSL = true);
     ~WsClient();
 
-    void reconnect(const std::string reason) override;
-    void send(const std::string& payload) const override;
+    void reconnect(std::string_view reason) override;
+    void send(std::string_view payload) const override;
     
-    void subscribe(const std::string& name,
-                  const std::string& payload,
-                  const std::string successKey,
+    void subscribe(std::string_view name,
+                  std::string_view payload,
+                  std::string_view successKey,
                   bool waitOk) override;
                   
-    void unSubscribe(const std::string& name,
-                     const std::string& payload,
-                     const std::string successKey,
-                     bool waitOk) override;
+    void unSubscribe(std::string_view name,
+                    std::string_view payload,
+                    std::string_view successKey,
+                    bool waitOk) override;
                      
-    void subscribeDynamic(const std::string& name,
-                         const std::string successKey,
+    void subscribeDynamic(std::string_view name,
+                         std::string_view successKey,
                          bool waitOk) override;
                          
-    void unSubscribeDynamic(const std::string& name,
-                           const std::string successKey,
+    void unSubscribeDynamic(std::string_view name,
+                           std::string_view successKey,
                            bool waitOk) override;
                            
-    bool isSubscribeOk(const std::string& name) override;
-    bool isUnsubscribeOk(const std::string& name) override;
+    bool isSubscribeOk(std::string_view name) override;
+    bool isUnsubscribeOk(std::string_view name) override;
 
     // Make these public for the callback
     void processMessage(const std::string& msg);

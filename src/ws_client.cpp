@@ -30,8 +30,8 @@ WsClient::~WsClient() {
 }
 
 WsClient::WsClient(IClientHandler* handler, 
-                   const std::string& url,
-                   const std::string& path,
+                   std::string_view url,
+                   std::string_view path,
                    uint16_t port,
                    bool useSSL)
     : ClientBase(handler)
@@ -125,9 +125,9 @@ void WsClient::disconnect() {
     }
 }
 
-void WsClient::reconnect(const std::string reason) {
+void WsClient::reconnect(std::string_view reason) {
     if (wsLogEnabled) {
-        logger->info("Reconnecting due to: {}" , reason);
+        logger->info("Reconnecting due to: {}", reason);
     }
     
     disconnect();
@@ -151,9 +151,9 @@ void WsClient::reconnect(const std::string reason) {
     subCv_.notify_one();
 }
 
-void WsClient::send(const std::string& payload) const {
+void WsClient::send(std::string_view payload) const {
     std::lock_guard<std::mutex> lock(sendMutex_);
-    sendQueue_.push(payload);
+    sendQueue_.push(std::string(payload));  // Still need to copy here for queue storage
     sendCv_.notify_one();
     
     if (connection_) {
@@ -161,32 +161,32 @@ void WsClient::send(const std::string& payload) const {
     }
 }
 
-void WsClient::subscribe(const std::string& name,
-                        const std::string& payload,
-                        const std::string successKey,
+void WsClient::subscribe(std::string_view name,
+                        std::string_view payload,
+                        std::string_view successKey,
                         bool waitOk) {
     std::lock_guard<std::mutex> lock(subMutex_);
     SubscribeRequest req{
-        name,
-        payload,
-        successKey,
+        std::string(name),      // Need to copy for storage
+        std::string(payload),   // Need to copy for storage
+        std::string(successKey),// Need to copy for storage
         waitOk,
         false,
         std::chrono::steady_clock::now()
     };
-    subscribeQueue_.push(req);
+    subscribeQueue_.push(std::move(req));  // Use move to avoid extra copy
     subCv_.notify_one();
 }
 
-void WsClient::unSubscribe(const std::string& name,
-                          const std::string& payload,
-                          const std::string successKey,
+void WsClient::unSubscribe(std::string_view name,
+                          std::string_view payload,
+                          std::string_view successKey,
                           bool waitOk) {
     std::lock_guard<std::mutex> lock(subMutex_);
     SubscribeRequest req{
-        name,
-        payload,
-        successKey,
+        std::string(name),
+        std::string(payload),
+        std::string(successKey),
         waitOk,
         true,
         std::chrono::steady_clock::now()
@@ -195,26 +195,26 @@ void WsClient::unSubscribe(const std::string& name,
     subCv_.notify_one();
 }
 
-void WsClient::subscribeDynamic(const std::string& name,
-                              const std::string successKey,
+void WsClient::subscribeDynamic(std::string_view name,
+                              std::string_view successKey,
                               bool waitOk) {
-    subscribe(name, handler->genSubscribePayload(name, false), successKey, waitOk);
+    subscribe(name, handler->genSubscribePayload(std::string(name), false), successKey, waitOk);
 }
 
-void WsClient::unSubscribeDynamic(const std::string& name,
-                                 const std::string successKey,
+void WsClient::unSubscribeDynamic(std::string_view name,
+                                 std::string_view successKey,
                                  bool waitOk) {
-    unSubscribe(name, handler->genSubscribePayload(name, true), successKey, waitOk);
+    unSubscribe(name, handler->genSubscribePayload(std::string(name), true), successKey, waitOk);
 }
 
-bool WsClient::isSubscribeOk(const std::string& name) {
+bool WsClient::isSubscribeOk(std::string_view name) {
     std::lock_guard<std::mutex> lock(subMutex_);
-    return subscribeStatus_[name];
+    return subscribeStatus_[std::string(name)];  // Need string for map lookup
 }
 
-bool WsClient::isUnsubscribeOk(const std::string& name) {
+bool WsClient::isUnsubscribeOk(std::string_view name) {
     std::lock_guard<std::mutex> lock(subMutex_);
-    return unsubscribeStatus_[name];
+    return unsubscribeStatus_[std::string(name)];  // Need string for map lookup
 }
 
 void WsClient::processMessage(const std::string& msg) {
