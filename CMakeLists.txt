@@ -20,6 +20,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(Libwebsockets REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(simdjson REQUIRED)
+find_package(cppzmq REQUIRED)
+
 
 add_definitions(
     -UNDEBUG
@@ -33,10 +35,12 @@ include_directories(
 set(WEBSOCKET_CLIENT_HEADERS
     websocket_client_base.h
     ws_client.h
+    zmq_manager.hpp
 )
 
 set(WEBSOCKET_CLIENT_SOURCES
     src/ws_client.cpp
+    src/binance_ws_client.cpp
 )
 
 add_executable(
@@ -53,6 +57,6 @@ target_link_libraries(
         websockets
         spdlog::spdlog
         simdjson::simdjson
-         
+        cppzmq
 )
 

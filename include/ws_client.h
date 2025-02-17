@@ -64,11 +64,9 @@ public:
     bool isSubscribeOk(std::string_view name) override;
     bool isUnsubscribeOk(std::string_view name) override;
 
-    // Make these public for the callback
-    void processMessage(const std::string& msg);
-
 protected:
     using ClientBase::handler;  // Make handler accessible
+    virtual void processMessage(const std::string& msg);  // Make it protected virtual
 
 private:
     void connect();

@@ -1,184 +1,90 @@
-#include <ws_client.h>
+#include "binance_ws_client.h"
+#include <zmq_manager.hpp>
 #include <iostream>
-#include <chrono>
 #include <thread>
-#include <spdlog/spdlog.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <fstream>
-#include <simdjson.h>
+#include <libwebsockets.h>
 
 using namespace cexpp::util::wss;
 
-
-class BitgetHandler : public IClientHandler {
+// 实现客户端处理程序
+class OrderHandler : public IClientHandler {
 public:
-    void onMessage(const std::string& msg) override {
-        simdjson::ondemand::parser parser;
-        simdjson::padded_string json_msg(msg);
-        
-        try {
-            auto doc = parser.iterate(json_msg);
-            spdlog::info("Received JSON message: {}", msg);
-            
-            // Handle pong response
-            std::string_view event;
-            if (doc["event"].get(event) == simdjson::SUCCESS && event == "pong") {
-                lastPongTime = std::chrono::steady_clock::now();
-                return;
-            }
+    // 添加ZMQ相关成员
+    std::unique_ptr<ZMQManager> zmq_manager;
+    BinanceWsClient* client;
 
-            // Handle error messages
-            int64_t code;
-            if (doc["code"].get(code) == simdjson::SUCCESS && code != 0) {
-                std::string_view message;
-                doc["msg"].get(message);
-                spdlog::error("Error: {}", message);
-                return;
-            }
-            
-            std::ofstream logFile("message_log.txt", std::ios::app);
-            if (logFile.is_open()) {
-                auto now = std::chrono::system_clock::now();
-                auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
-                
-                // Check if 'data' exists and is an array
-                auto data = doc["data"];
-                if (doc["data"].error() == simdjson::SUCCESS && data.type() == simdjson::ondemand::json_type::array) {
-                    for (auto item : data.get_array()) {
-                        std::string_view ts;
-                        if (item["ts"].get(ts) == simdjson::SUCCESS) {
-                            logFile << timestamp << ": " << ts << std::endl;
-                        }
-                    }
-                }
-                logFile.close();
-            }
-        } 
-        catch (const simdjson::simdjson_error& e) {
-            spdlog::error("Error processing message: {}", e.what());
+    void onMessage(const std::string& payload) override {
+        std::cout << "Received order update:\n" << payload << "\n";
+        
+        // 这里可以添加更复杂的订单状态解析逻辑
+        if (payload.find("\"s\":\"FILLED\"") != std::string::npos) {
+            std::cout << "Order filled completely!\n";
+        } else if (payload.find("\"s\":\"PARTIALLY_FILLED\"") != std::string::npos) {
+            std::cout << "Order partially filled!\n";
         }
     }
 
     void onUpdate() override {
-        spdlog::info("Connection status updated");
-        // Start ping timer after connection is established
-        if (wsClient) {
-            startPingTimer();
-        }
+        std::cout << "Connection established/updated\n";
     }
 
     std::string genSubscribePayload(const std::string& name, bool isUnsubscribe) override {
-        // Parse the subscription details from the name
-        // Expecting format: "instType.channel.instId"
-        auto parts = splitString(name, '.');
-        if (parts.size() != 3) {
-            throw std::runtime_error("Invalid subscription name format");
-        }
-
-        std::string payload;
-        if (isUnsubscribe) {
-            payload = R"({"op":"unsubscribe","args":[{"instType":")" + parts[0] + 
-                     R"(","channel":")" + parts[1] + 
-                     R"(","instId":")" + parts[2] + R"("}]})";
-        } else {
-            payload = R"({"op":"subscribe","args":[{"instType":")" + parts[0] + 
-                     R"(","channel":")" + parts[1] + 
-                     R"(","instId":")" + parts[2] + R"("}]})";
-        }
-        return payload;
+        // 本例不需要订阅频道，返回空字符串
+        return "";
     }
 
-    void setWsClient(WsClient* client) {
-        wsClient = client;
-        if (wsClient) {
-            startPingTimer();
-        }
-    }
+    // 添加ZMQ信号处理逻辑
+    void setup_zmq_listener(struct lws_context* lws_ctx) {
+        zmq_manager = std::make_unique<ZMQManager>(lws_ctx, "tcp://localhost:5556");
+        zmq_manager->set_signal_handler([this](const TradeSignal& signal) {
+            auto trim_str = [](const char* data, size_t max) {
+                return std::string(data, strnlen(data, max));
+            };
 
-    ~BitgetHandler() {
-        stopPingTimer();
-    }
-
-private:
-    void startPingTimer() {
-        stopPingTimer();  // Stop existing timer if any
-        
-        pingRunning = true;
-        pingThread = std::thread([this]() {
-            while (pingRunning) {
-                if (wsClient) {
-                    // Use raw string for ping since simdjson is parse-only
-                    wsClient->send(R"({"event":"ping"})");
-                }
-                std::this_thread::sleep_for(std::chrono::seconds(20));
+            try {
+                client->place_order(
+                    trim_str(signal.symbol, 32).c_str(),
+                    trim_str(signal.side, 8).c_str(),
+                    trim_str(signal.type, 16).c_str(),
+                    signal.quantity,
+                    signal.price
+                );
+            } catch (const std::exception& e) {
+                std::cerr << "Order failed: " << e.what() << "\n";
             }
         });
     }
-
-    void stopPingTimer() {
-        pingRunning = false;
-        if (pingThread.joinable()) {
-            pingThread.join();
-        }
-    }
-
-    std::vector<std::string> splitString(const std::string& str, char delimiter) {
-        std::vector<std::string> tokens;
-        std::string token;
-        std::istringstream tokenStream(str);
-        while (std::getline(tokenStream, token, delimiter)) {
-            tokens.push_back(token);
-        }
-        return tokens;
-    }
-
-    WsClient* wsClient = nullptr;
-    std::thread pingThread;
-    std::atomic<bool> pingRunning{false};
-    std::chrono::steady_clock::time_point lastPongTime;
 };
 
 int main() {
-    // Enable WebSocket logging
+    struct lws_context_creation_info info;
+    memset(&info, 0, sizeof(info));
+    info.port = CONTEXT_PORT_NO_LISTEN;
+    struct lws_context* lws_ctx = lws_create_context(&info);
 
-    auto handler = std::make_shared<BitgetHandler>();
-    
-    // Create WebSocket client for Bitget
-    auto client = std::make_shared<WsClient>(
-        handler.get(),
-        "ws.bitget.com",    // Bitget WebSocket domain
-        "/v2/ws/public",    // WebSocket path
-        443,               // Port
-        true              // Use SSL
-    );
+    try {
+        OrderHandler handler;
+        BinanceWsClient client(
+            &handler,
+            "8W4HJU3kXIGp5gYmGIYlATxIKeH1Psac1Q1e06Oiis1B9DF6CRcMZPNTD7VDhLq3",
+            "../Private_key.pem",
+            true
+        );
+        handler.client = &client;
+        handler.setup_zmq_listener(lws_ctx);
 
-    // Set the client reference in handler for ping-pong
-    handler->setWsClient(client.get());
-
-    // Subscribe to BTC-USDT futures ticker
-    std::string channelName = "USDT-FUTURES.ticker.BTCUSDT";
-    client->subscribeDynamic(channelName, "code", true);
-    channelName = "USDT-FUTURES.ticker.XRPUSDT";
-    client->subscribeDynamic(channelName, "code", true);
-    channelName = "USDT-FUTURES.ticker.ETHUSDT";
-    client->subscribeDynamic(channelName, "code", true);
-
-    // Keep the program running and handle user input
-    std::string command;
-    while (true) {
-        std::cout << "\nEnter command (subscribe/unsubscribe/quit): ";
-        std::getline(std::cin, command);
-
-        if (command == "quit") {
-            break;
+        std::cout << "Waiting for ZMQ signals...\n";
+        while (true) {
+            lws_service(lws_ctx, 0);
+            usleep(1000); // 1ms sleep to prevent 100% CPU
         }
-        else if (command == "subscribe") {
-            client->subscribeDynamic(channelName, "code", true);
-        }
-        else if (command == "unsubscribe") {
-            client->unSubscribeDynamic(channelName, "code", true);
-        }
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        lws_context_destroy(lws_ctx);
+        return 1;
     }
 
+    lws_context_destroy(lws_ctx);
     return 0;
 }

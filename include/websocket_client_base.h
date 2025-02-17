@@ -18,10 +18,10 @@ namespace cexpp::util::wss
     class IClientHandler
     {
     public:
+        virtual ~IClientHandler() = default;
+        virtual void onMessage(const std::string& payload) = 0;
         virtual void onUpdate() = 0;
-        virtual void onMessage(const nlohmann::json &payload) = 0;
-        virtual void onMessage(const std::string &payload) = 0;
-        virtual std::string genSubscribePayload(const std::string &name, bool unSub) = 0;
+        virtual std::string genSubscribePayload(const std::string& name, bool isUnsubscribe) = 0;
     };
 
     class ClientBase

@@ -2,6 +2,7 @@
 libwebsockets/4.3.3
 spdlog/1.15.0
 simdjson/3.11.5
+cppzmq/4.10.0
 
 [generators]
 CMakeDeps
