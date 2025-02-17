@@ -4,34 +4,59 @@
 #include <thread>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <fstream>
+#include <simdjson.h>
 
 using namespace cexpp::util::wss;
 
 
 class BitgetHandler : public IClientHandler {
 public:
-    void onMessage(const nlohmann::json& json) override {
+    void onMessage(const std::string& msg) override {
+        simdjson::ondemand::parser parser;
+        simdjson::padded_string json_msg(msg);
+        
         try {
-            spdlog::info("Received JSON message: {}", json.dump(2));
+            auto doc = parser.iterate(json_msg);
+            spdlog::info("Received JSON message: {}", msg);
             
             // Handle pong response
-            if (json.contains("event") && json["event"] == "pong") {
+            std::string_view event;
+            if (doc["event"].get(event) == simdjson::SUCCESS && event == "pong") {
                 lastPongTime = std::chrono::steady_clock::now();
                 return;
             }
 
             // Handle error messages
-            if (json.contains("code") && json["code"] != 0) {
-                spdlog::error("Error: {}", json["msg"].get<std::string>());
+            int64_t code;
+            if (doc["code"].get(code) == simdjson::SUCCESS && code != 0) {
+                std::string_view message;
+                doc["msg"].get(message);
+                spdlog::error("Error: {}", message);
                 return;
             }
-        } catch (const std::exception& e) {
+            
+            std::ofstream logFile("message_log.txt", std::ios::app);
+            if (logFile.is_open()) {
+                auto now = std::chrono::system_clock::now();
+                auto timestamp = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+                
+                // Check if 'data' exists and is an array
+                auto data = doc["data"];
+                if (doc["data"].error() == simdjson::SUCCESS && data.type() == simdjson::ondemand::json_type::array) {
+                    for (auto item : data.get_array()) {
+                        std::string_view ts;
+                        if (item["ts"].get(ts) == simdjson::SUCCESS) {
+                            logFile << timestamp << ": " << ts << std::endl;
+                        }
+                    }
+                }
+                logFile.close();
+            }
+        } 
+        catch (const simdjson::simdjson_error& e) {
             spdlog::error("Error processing message: {}", e.what());
         }
-    }
-
-    void onMessage(const std::string& msg) override {
-        spdlog::info("Received raw message: {}", msg);
     }
 
     void onUpdate() override {
@@ -50,17 +75,17 @@ public:
             throw std::runtime_error("Invalid subscription name format");
         }
 
-        nlohmann::json payload;
-        payload["op"] = isUnsubscribe ? "unsubscribe" : "subscribe";
-        payload["args"] = nlohmann::json::array();
-        
-        nlohmann::json arg;
-        arg["instType"] = parts[0];
-        arg["channel"] = parts[1];
-        arg["instId"] = parts[2];
-        payload["args"].push_back(arg);
-
-        return payload.dump();
+        std::string payload;
+        if (isUnsubscribe) {
+            payload = R"({"op":"unsubscribe","args":[{"instType":")" + parts[0] + 
+                     R"(","channel":")" + parts[1] + 
+                     R"(","instId":")" + parts[2] + R"("}]})";
+        } else {
+            payload = R"({"op":"subscribe","args":[{"instType":")" + parts[0] + 
+                     R"(","channel":")" + parts[1] + 
+                     R"(","instId":")" + parts[2] + R"("}]})";
+        }
+        return payload;
     }
 
     void setWsClient(WsClient* client) {
@@ -82,12 +107,10 @@ private:
         pingThread = std::thread([this]() {
             while (pingRunning) {
                 if (wsClient) {
-                    // Bitget's ping format
-                    nlohmann::json pingMsg;
-                    pingMsg["event"] = "ping";
-                    wsClient->send(pingMsg.dump());
+                    // Use raw string for ping since simdjson is parse-only
+                    wsClient->send(R"({"event":"ping"})");
                 }
-                std::this_thread::sleep_for(std::chrono::seconds(20));  // Send ping every 20 seconds
+                std::this_thread::sleep_for(std::chrono::seconds(20));
             }
         });
     }

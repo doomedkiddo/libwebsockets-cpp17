@@ -3,6 +3,7 @@
 #include <iostream>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <simdjson.h>
 
 namespace cexpp::util::wss {
 
@@ -230,12 +231,8 @@ void WsClient::processMessage(const std::string& msg) {
         handleSubscribeResponse(msg);
     }
     
-    try {
-        auto json = nlohmann::json::parse(msg);
-        handler->onMessage(json);
-    } catch (const std::exception& e) {
-        handler->onMessage(msg);
-    }
+    // Pass the raw message to the handler
+    handler->onMessage(msg);
 }
 
 void WsClient::processSubscribeQueue() {
