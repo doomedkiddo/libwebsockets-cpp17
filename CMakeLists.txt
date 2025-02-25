@@ -28,6 +28,7 @@ add_definitions(
 
 include_directories(
     include
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 set(WEBSOCKET_CLIENT_HEADERS
@@ -37,6 +38,9 @@ set(WEBSOCKET_CLIENT_HEADERS
 
 set(WEBSOCKET_CLIENT_SOURCES
     src/ws_client.cpp
+    src/crypto_utils.cpp
+    # binance_futures.cpp
+    src/binance_order_handler.cpp
 )
 
 add_executable(
