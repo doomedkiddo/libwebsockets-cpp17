@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <condition_variable>
 #include <chrono>
+#include <functional>
+#include <vector>
 
 namespace cexpp::util::wss {
 
@@ -67,6 +69,10 @@ public:
     // Make these public for the callback
     void processMessage(const std::string& msg);
 
+    void setSubscriptionCallback(std::function<void(const std::string&, bool)> callback);
+    void setUnsubscriptionCallback(std::function<void(const std::string&, bool)> callback);
+    void processEvents();
+
 protected:
     using ClientBase::handler;  // Make handler accessible
 
@@ -109,6 +115,10 @@ private:
     // Retry configuration
     static constexpr int MAX_RETRY_COUNT = 3;
     static constexpr auto RETRY_INTERVAL = std::chrono::seconds(5);
+
+    std::function<void(const std::string&, bool)> subscriptionCallback_;
+    std::function<void(const std::string&, bool)> unsubscriptionCallback_;
+    std::vector<std::pair<std::string, bool>> pendingCallbacks_; // Tracks callbacks to be processed
 
     friend int wsCallback(struct lws* wsi,
                          enum lws_callback_reasons reason,

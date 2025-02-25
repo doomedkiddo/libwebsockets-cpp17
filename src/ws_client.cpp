@@ -3,6 +3,7 @@
 #include <iostream>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <sched.h>  // 添加头文件
 
 namespace cexpp::util::wss {
 
@@ -60,29 +61,62 @@ WsClient::WsClient(IClientHandler* handler,
     protocols_[1].user = nullptr;
     protocols_[1].tx_packet_size = 0;
     
+    // Start service thread with connect to avoid race conditions
+    running_ = true;
+    
+    // Pre-resolve DNS to speed up connection
+    if (wsLogEnabled) {
+        logger->info("Pre-resolving DNS for {}", url_);
+    }
+    struct addrinfo hints = {0};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    
+    struct addrinfo* result;
+    if (getaddrinfo(url_.c_str(), std::to_string(port_).c_str(), &hints, &result) == 0) {
+        // Successfully pre-resolved DNS
+        freeaddrinfo(result);
+    }
+    
+    // Connect immediately before starting service thread to speed up initialization
     connect();
     
-    // Start service thread
-    running_ = true;
     serviceThread_ = std::thread([this]() {
+        // 设置服务线程亲和性
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(-1, &cpuset); // 绑定到核心
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+        
         while (running_) {
             if (context_) {
-                lws_service(context_, 50);  // 50ms timeout
+                lws_service(context_, 1); // Reduce to 1ms for fastest response time
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // Avoid unnecessary sleep that adds latency
+            std::this_thread::yield();
         }
     });
     
-    // Start subscribe management thread
+    // Start subscribe management thread with optimized timing
     subscribeThread_ = std::thread([this]() {
+        // 设置订阅线程亲和性
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(-1, &cpuset); // 绑定到核心
+        pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+        
         while (running_) {
             processSubscribeQueue();
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(5)); // Reduce from 50ms to 20ms
         }
     });
 }
 
 void WsClient::connect() {
+    if (wsLogEnabled) {
+        logger->info("Initializing connection to {}:{}{}", url_, port_, path_);
+    }
+    
     struct lws_context_creation_info info = {};  // Zero-initialize the struct
     
     info.port = CONTEXT_PORT_NO_LISTEN;
@@ -90,6 +124,15 @@ void WsClient::connect() {
     info.gid = -1;
     info.uid = -1;
     info.options = LWS_SERVER_OPTION_DO_SSL_GLOBAL_INIT;
+    
+    // Keep-alive settings (available in most versions)
+    info.ka_time = 10; // Keep-alive timeout in seconds
+    info.ka_interval = 5; // Keep-alive interval
+    info.ka_probes = 3; // Number of keep-alive probes
+    
+    // Remove DNS cache settings for compatibility
+    // info.dns_cache_ttl = 300; // Only available in newer versions
+    // info.dns_rev_cache_ttl = 300;
     
     context_ = lws_create_context(&info);
     if (!context_) {
@@ -105,9 +148,18 @@ void WsClient::connect() {
     ccinfo.host = url_.c_str();
     ccinfo.origin = url_.c_str();
     ccinfo.protocol = protocols_[0].name;
-    ccinfo.ssl_connection = useSSL_ ? LCCSCF_USE_SSL | LCCSCF_ALLOW_SELFSIGNED : 0;
+    
+    // SSL settings (available in most versions)
+    ccinfo.ssl_connection = useSSL_ ? 
+        LCCSCF_USE_SSL | LCCSCF_ALLOW_SELFSIGNED | 
+        LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK : 0;
+    
+    if (wsLogEnabled) {
+        logger->info("Connecting to {}:{}{}", url_, port_, path_);
+    }
     
     connection_ = lws_client_connect_via_info(&ccinfo);
+    
     if (!connection_) {
         throw std::runtime_error("Failed to connect to server");
     }
@@ -130,11 +182,46 @@ void WsClient::reconnect(std::string_view reason) {
         logger->info("Reconnecting due to: {}", reason);
     }
     
-    disconnect();
-    connect();
+    // Add a small delay before reconnecting to avoid rapid reconnection attempts
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
     
-    // Resubscribe to all active subscriptions
+    disconnect();
+    
+    // Try to connect up to 3 times with increasing backoff
+    for (int attempt = 0; attempt < 3; attempt++) {
+        try {
+            logger->info("Connection attempt {} of 3", attempt + 1);
+            connect();
+            logger->info("Connection successful");
+            
+            // Successfully connected, no need to try more
+            break;
+        } catch (const std::exception& e) {
+            if (wsLogEnabled) {
+                logger->error("Reconnect attempt {} failed: {}", attempt + 1, e.what());
+            }
+            
+            // Last attempt failed, but we've run out of retries
+            if (attempt == 2) {
+                logger->error("All reconnection attempts failed");
+                return;
+            }
+            
+            // Exponential backoff for next attempt
+            std::this_thread::sleep_for(std::chrono::milliseconds(500 * (1 << attempt)));
+        }
+    }
+    
+    // For Binance direct streams, we don't need to resubscribe
+    if (path_.find("/ws/") == 0) {
+        logger->info("Using direct stream URL - no resubscription needed");
+        return;
+    }
+    
+    // For non-direct streams, resubscribe to active subscriptions
     std::lock_guard<std::mutex> lock(subMutex_);
+    logger->info("Resubscribing to active streams");
+    
     for (const auto& [name, status] : subscribeStatus_) {
         if (status) {
             SubscribeRequest req{
@@ -275,13 +362,58 @@ void WsClient::handleSubscribeResponse(const std::string& msg) {
             if (req.isUnsubscribe) {
                 unsubscribeStatus_[req.name] = true;
                 subscribeStatus_[req.name] = false;
+                
+                // Add to pending callbacks
+                pendingCallbacks_.emplace_back(req.name, true);
             } else {
                 subscribeStatus_[req.name] = true;
                 unsubscribeStatus_[req.name] = false;
+                
+                // Add to pending callbacks
+                pendingCallbacks_.emplace_back(req.name, false);
             }
             subscribeQueue_.pop();
             subCv_.notify_one();
         }
+    }
+}
+
+void WsClient::setSubscriptionCallback(std::function<void(const std::string&, bool)> callback) {
+    subscriptionCallback_ = std::move(callback);
+}
+
+void WsClient::setUnsubscriptionCallback(std::function<void(const std::string&, bool)> callback) {
+    unsubscriptionCallback_ = std::move(callback);
+}
+
+void WsClient::processEvents() {
+    // Process any pending events in the main thread
+    // This can be called regularly from the main loop
+    
+    // Check for subscription status changes
+    std::lock_guard<std::mutex> lock(subMutex_);
+    for (auto it = pendingCallbacks_.begin(); it != pendingCallbacks_.end();) {
+        const auto& [name, isUnsubscribe] = *it;
+        
+        if (isUnsubscribe) {
+            if (unsubscribeStatus_[name]) {
+                if (unsubscriptionCallback_) {
+                    unsubscriptionCallback_(name, true);
+                }
+                it = pendingCallbacks_.erase(it);
+                continue;
+            }
+        } else {
+            if (subscribeStatus_[name]) {
+                if (subscriptionCallback_) {
+                    subscriptionCallback_(name, true);
+                }
+                it = pendingCallbacks_.erase(it);
+                continue;
+            }
+        }
+        
+        ++it;
     }
 }
 
@@ -340,12 +472,20 @@ int wsCallback(struct lws* wsi,
             break;
         }
         
-        case LWS_CALLBACK_CLIENT_CLOSED:
         case LWS_CALLBACK_CLIENT_CONNECTION_ERROR: {
+            const char* error_msg = in ? static_cast<const char*>(in) : "Unknown error";
             if (wsLogEnabled) {
-                logger->warn("Connection closed or error");
+                logger->error("Connection error: {}", error_msg);
             }
-            client->reconnect("Connection closed or error");
+            client->reconnect("Connection error");
+            break;
+        }
+        
+        case LWS_CALLBACK_CLIENT_CLOSED: {
+            if (wsLogEnabled) {
+                logger->warn("Connection closed");
+            }
+            client->reconnect("Connection closed");
             break;
         }
         

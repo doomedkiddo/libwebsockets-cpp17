@@ -4,26 +4,40 @@
 #include <thread>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
+#include <signal.h>
 
 using namespace cexpp::util::wss;
 
+// Add global running flag
+static std::atomic<bool> running{true};
 
-class BitgetHandler : public IClientHandler {
+class BinanceHandler : public IClientHandler {
 public:
     void onMessage(const nlohmann::json& json) override {
         try {
-            spdlog::info("Received JSON message: {}", json.dump(2));
+            // For a direct stream connection, we'll receive data directly
+            // The format is different from subscription-based connections
             
-            // Handle pong response
-            if (json.contains("event") && json["event"] == "pong") {
-                lastPongTime = std::chrono::steady_clock::now();
-                return;
+            // Direct stream data doesn't have a stream field, the whole JSON is the data
+            spdlog::info("Received market data: {}", json.dump(2));
+            
+            // Process ticker data specifically
+            if (json.contains("e") && json["e"] == "24hrTicker") {
+                // Example of extracting some key ticker data
+                std::string symbol = json["s"];
+                double price = std::stod(json["c"].get<std::string>());
+                double priceChange = std::stod(json["p"].get<std::string>());
+                double priceChangePercent = std::stod(json["P"].get<std::string>());
+                
+                spdlog::info("Ticker: {} Price: {} Change: {}%", 
+                             symbol, price, priceChangePercent);
             }
-
-            // Handle error messages
-            if (json.contains("code") && json["code"] != 0) {
-                spdlog::error("Error: {}", json["msg"].get<std::string>());
-                return;
+            
+            // Other message types can be processed here
+            
+            // Error handling still applies
+            if (json.contains("error")) {
+                spdlog::error("Error: {}", json.dump());
             }
         } catch (const std::exception& e) {
             spdlog::error("Error processing message: {}", e.what());
@@ -36,67 +50,41 @@ public:
 
     void onUpdate() override {
         spdlog::info("Connection status updated");
-        // Start ping timer after connection is established
-        if (wsClient) {
-            startPingTimer();
-        }
+        // For direct stream connections, we don't need ping-pong
+        // Binance will keep the connection alive
     }
 
     std::string genSubscribePayload(const std::string& name, bool isUnsubscribe) override {
-        // Parse the subscription details from the name
-        // Expecting format: "instType.channel.instId"
-        auto parts = splitString(name, '.');
-        if (parts.size() != 3) {
-            throw std::runtime_error("Invalid subscription name format");
-        }
-
-        nlohmann::json payload;
-        payload["op"] = isUnsubscribe ? "unsubscribe" : "subscribe";
-        payload["args"] = nlohmann::json::array();
+        // Binance expects: {"method":"SUBSCRIBE","params":["btcusdt@ticker"],"id":1}
+        static int requestId = 1;
         
-        nlohmann::json arg;
-        arg["instType"] = parts[0];
-        arg["channel"] = parts[1];
-        arg["instId"] = parts[2];
-        payload["args"].push_back(arg);
+        nlohmann::json payload;
+        payload["method"] = isUnsubscribe ? "UNSUBSCRIBE" : "SUBSCRIBE";
+        payload["params"] = nlohmann::json::array();
+        payload["params"].push_back(name);
+        payload["id"] = requestId++;  // Use incrementing ID for each request
 
         return payload.dump();
     }
 
     void setWsClient(WsClient* client) {
         wsClient = client;
-        if (wsClient) {
-            startPingTimer();
-        }
+        // Don't start ping timer for direct streams
     }
 
-    ~BitgetHandler() {
+    ~BinanceHandler() {
         stopPingTimer();
     }
 
 private:
+    // Keep ping timer methods but don't use them
     void startPingTimer() {
-        stopPingTimer();  // Stop existing timer if any
-        
-        pingRunning = true;
-        pingThread = std::thread([this]() {
-            while (pingRunning) {
-                if (wsClient) {
-                    // Bitget's ping format
-                    nlohmann::json pingMsg;
-                    pingMsg["event"] = "ping";
-                    wsClient->send(pingMsg.dump());
-                }
-                std::this_thread::sleep_for(std::chrono::seconds(20));  // Send ping every 20 seconds
-            }
-        });
+        // For direct streams, we don't need to send pings
+        spdlog::info("Ping timer not required for direct stream connection");
     }
 
     void stopPingTimer() {
-        pingRunning = false;
-        if (pingThread.joinable()) {
-            pingThread.join();
-        }
+        // No need to implement stopPingTimer for direct streams
     }
 
     std::vector<std::string> splitString(const std::string& str, char delimiter) {
@@ -110,51 +98,53 @@ private:
     }
 
     WsClient* wsClient = nullptr;
-    std::thread pingThread;
-    std::atomic<bool> pingRunning{false};
     std::chrono::steady_clock::time_point lastPongTime;
 };
 
 int main() {
     // Enable WebSocket logging
-
-    auto handler = std::make_shared<BitgetHandler>();
+    wsLogEnabled = true;
     
-    // Create WebSocket client for Bitget
+    // Set spdlog to flush immediately to see real-time logs
+    spdlog::set_level(spdlog::level::debug);
+    spdlog::flush_every(std::chrono::seconds(1));
+
+    auto handler = std::make_shared<BinanceHandler>();
+    
+    // For a single stream, use the direct stream URL format
+    std::string channelName = "btcusdt@ticker";
+    
+    spdlog::info("Creating WebSocket client for Binance...");
+    
+    // Create WebSocket client with the direct stream endpoint
+    // IMPORTANT: For a direct single stream, we connect directly to the stream endpoint
     auto client = std::make_shared<WsClient>(
         handler.get(),
-        "ws.bitget.com",    // Bitget WebSocket domain
-        "/v2/ws/public",    // WebSocket path
-        443,               // Port
-        true              // Use SSL
+        "stream.binance.com",      // Binance WebSocket domain
+        "/ws/" + channelName,      // Direct stream path - use this format for single streams
+        443,                       // Port
+        true                       // Use SSL
     );
 
-    // Set the client reference in handler for ping-pong
+    // Immediately set the client reference in handler to avoid race conditions
     handler->setWsClient(client.get());
+    
+    spdlog::info("WebSocket client created and initialized");
 
-    // Subscribe to BTC-USDT futures ticker
-    std::string channelName = "USDT-FUTURES.ticker.BTCUSDT";
-    client->subscribeDynamic(channelName, "code", true);
-    channelName = "USDT-FUTURES.ticker.XRPUSDT";
-    client->subscribeDynamic(channelName, "code", true);
-    channelName = "USDT-FUTURES.ticker.ETHUSDT";
-    client->subscribeDynamic(channelName, "code", true);
+    // Set up a signal handler for clean shutdown
+    signal(SIGINT, [](int) {
+        std::cout << "\nShutting down..." << std::endl;
+        // Global flag to indicate shutdown
+        running = false;
+    });
 
-    // Keep the program running and handle user input
-    std::string command;
-    while (true) {
-        std::cout << "\nEnter command (subscribe/unsubscribe/quit): ";
-        std::getline(std::cin, command);
-
-        if (command == "quit") {
-            break;
-        }
-        else if (command == "subscribe") {
-            client->subscribeDynamic(channelName, "code", true);
-        }
-        else if (command == "unsubscribe") {
-            client->unSubscribeDynamic(channelName, "code", true);
-        }
+    // Main event loop
+    while (running) {
+        // Process any pending events
+        client->processEvents();
+        
+        // Reduce sleep time for faster response
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 
     return 0;
